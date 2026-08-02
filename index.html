@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sistem Asisten Dokumen AI</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+    <div class="container">
+        <!-- Navigation Tabs -->
+        <div class="nav-tabs">
+            <button class="tab-btn active" onclick="switchTab('upload')">1. Unggah Dokumen</button>
+            <button class="tab-btn" onclick="switchTab('chat')">2. Tanya Jawab PDF</button>
+        </div>
+
+        <!-- TAB 1: UPLOAD DOKUMEN -->
+        <div id="upload-tab" class="tab-content active">
+            <h2>Unggah Dokumen PDF</h2>
+            <p>Unggah file PDF materi atau buku panduan sekali saja untuk memulai sesi tanya jawab.</p>
+            
+            <form id="uploadForm">
+                <div class="form-group">
+                    <input type="file" id="pdfFile" accept="application/pdf" required>
+                </div>
+                <button type="submit" id="btnUpload">Unggah PDF</button>
+            </form>
+
+            <div id="uploadStatus" class="status-box"></div>
+        </div>
+
+        <!-- TAB 2: CHAT TANYA JAWAB -->
+        <div id="chat-tab" class="tab-content">
+            <h2>Tanya Jawab Dokumen</h2>
+            
+            <div id="documentInfo" class="info-alert">
+                Status Dokumen: <strong id="docStatusText" style="color: #dc3545;">Belum Ada PDF Diunggah</strong>
+            </div>
+
+            <!-- Chat Container -->
+            <div id="chatBox" class="chat-box">
+                <div class="chat-message bot">
+                    Halo! Silakan unggah dokumen PDF terlebih dahulu, lalu ajukan pertanyaan di sini.
+                </div>
+            </div>
+
+            <!-- Chat Input Form -->
+            <form id="chatForm" class="chat-input-form">
+                <input type="text" id="userQuestion" placeholder="Ketik pertanyaan sesuai isi PDF..." required disabled>
+                <button type="submit" id="btnSend" disabled>Kirim</button>
+            </form>
+        </div>
+    </div>
+
+    <script>
+        const API_URL = "http://localhost:3001";
+        
+        // Dynamic State Management
+        let currentFileUri = localStorage.getItem("pdf_fileUri") || null;
+        let currentMimeType = localStorage.getItem("pdf_mimeType") || "application/pdf";
+        let currentInteractionId = null; // Menyimpan ID sesi percakapan berlanjut
+
+        // Initialize UI State
+        document.addEventListener("DOMContentLoaded", () => {
+            updateDocumentStatusUI();
+        });
+
+        // Tab Navigation
+        function switchTab(tabName) {
+            document.querySelectorAll('.tab-btn').forEach(btn => btn.classList.remove('active'));
+            document.querySelectorAll('.tab-content').forEach(content => content.classList.remove('active'));
+
+            if (tabName === 'upload') {
+                document.querySelectorAll('.tab-btn')[0].classList.add('active');
+                document.getElementById('upload-tab').classList.add('active');
+            } else {
+                document.querySelectorAll('.tab-btn')[1].classList.add('active');
+                document.getElementById('chat-tab').classList.add('active');
+            }
+        }
+
+        function updateDocumentStatusUI() {
+            const statusText = document.getElementById("docStatusText");
+            const inputQuestion = document.getElementById("userQuestion");
+            const btnSend = document.getElementById("btnSend");
+
+            if (currentFileUri) {
+                statusText.innerText = "PDF Siap Digunakan ✓";
+                statusText.style.color = "#28a745";
+                inputQuestion.disabled = false;
+                btnSend.disabled = false;
+            } else {
+                statusText.innerText = "Belum Ada PDF Diunggah";
+                statusText.style.color = "#dc3545";
+                inputQuestion.disabled = true;
+                btnSend.disabled = true;
+            }
+        }
+
+        // Handle File Upload API
+        document.getElementById("uploadForm").addEventListener("submit", async (e) => {
+            e.preventDefault();
+            const fileInput = document.getElementById("pdfFile");
+            const statusDiv = document.getElementById("uploadStatus");
+            const btnUpload = document.getElementById("btnUpload");
+
+            if (!fileInput.files[0]) return;
+
+            const formData = new FormData();
+            formData.append("pdf", fileInput.files[0]);
+
+            btnUpload.disabled = true;
+            statusDiv.className = "status-box info";
+            statusDiv.innerText = "Mengunggah dan memproses file PDF ke server...";
+
+            try {
+                const response = await fetch(`${API_URL}/upload-pdf`, {
+                    method: "POST",
+                    body: formData
+                });
+
+                const data = await response.json();
+
+                if (response.ok) {
+                    currentFileUri = data.fileUri;
+                    currentMimeType = data.mimeType || "application/pdf";
+                    currentInteractionId = null; // Reset sesi chat baru
+
+                    // Simpan ke localStorage
+                    localStorage.setItem("pdf_fileUri", currentFileUri);
+                    localStorage.setItem("pdf_mimeType", currentMimeType);
+
+                    statusDiv.className = "status-box success";
+                    statusDiv.innerText = "Berhasil! PDF telah diunggah dan siap ditanyakan.";
+                    updateDocumentStatusUI();
+
+                    // Otomatis pindah ke tab chat setelah 1.5 detik
+                    setTimeout(() => switchTab('chat'), 1200);
+                } else {
+                    throw new Error(data.error || data.details || "Gagal mengunggah PDF");
+                }
+            } catch (err) {
+                statusDiv.className = "status-box error";
+                statusDiv.innerText = "Error: " + err.message;
+            } finally {
+                btnUpload.disabled = false;
+            }
+        });
+
+        // Handle Continuous Chat API
+        document.getElementById("chatForm").addEventListener("submit", async (e) => {
+            e.preventDefault();
+            const questionInput = document.getElementById("userQuestion");
+            const chatBox = document.getElementById("chatBox");
+            const btnSend = document.getElementById("btnSend");
+
+            const question = questionInput.value.trim();
+            if (!question || !currentFileUri) return;
+
+            // Render User Message
+            appendMessage("user", question);
+            questionInput.value = "";
+            btnSend.disabled = true;
+
+            // Render Loading State
+            const loadingId = appendMessage("bot", "<i>Sedang membaca dokumen...</i>");
+
+            try {
+                const payload = {
+                    fileUri: currentFileUri,
+                    mimeType: currentMimeType,
+                    question: question
+                };
+
+                // Kirim interactionId jika ini pertanyaan berkesinambungan
+                if (currentInteractionId) {
+                    payload.interactionId = currentInteractionId;
+                }
+
+                const response = await fetch(`${API_URL}/chat-pdf`, {
+                    method: "POST",
+                    headers: {
+                        "Content-Type": "application/json"
+                    },
+                    body: JSON.stringify(payload)
+                });
+
+                const data = await response.json();
+
+                // Hapus pesan loading
+                document.getElementById(loadingId).remove();
+
+                if (response.ok) {
+                    // Update interactionId untuk menjaga konteks percakapan berlanjut
+                    currentInteractionId = data.interactionId;
+                    appendMessage("bot", data.result);
+                } else {
+                    throw new Error(data.error || data.details || "Gagal mendapatkan respon.");
+                }
+            } catch (err) {
+                appendMessage("bot", `<span style="color:red">Error: ${err.message}</span>`);
+            } finally {
+                btnSend.disabled = false;
+                questionInput.focus();
+            }
+        });
+
+        function appendMessage(sender, text) {
+            const chatBox = document.getElementById("chatBox");
+            const msgDiv = document.createElement("div");
+            const uniqueId = "msg-" + Date.now();
+            
+            msgDiv.id = uniqueId;
+            msgDiv.className = `chat-message ${sender}`;
+            msgDiv.innerHTML = text;
+
+            chatBox.appendChild(msgDiv);
+            chatBox.scrollTop = chatBox.scrollHeight;
+
+            return uniqueId;
+        }
+    </script>
+</body>
+</html>
